@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 
 """
-linkedin2username by initstring (gitlab.com/initstring)
+linkedin2username by initstring (github.com/initstring)
 
 OSINT tool to discover likely usernames and email addresses for employees
 of a given company on LinkedIn. This tool actually logs in with your valid
@@ -15,13 +15,13 @@ import time
 import argparse
 import getpass
 from distutils.version import StrictVersion
-
+import urllib.parse
 import requests
 
 
                 ########## BEGIN GLOBAL DECLARATIONS ##########
 
-CURRENT_TAG = '0.12'
+CURRENT_REL = '0.16'
 BANNER = r"""
 
                             .__  .__________
@@ -32,7 +32,7 @@ BANNER = r"""
                                linkedin2username
     
                                    Spray away.
-                              gitlab.com/initstring
+                              github.com/initstring
 
 """
 # The dictionary below is a best-effort attempt to spread a search load
@@ -78,11 +78,17 @@ def parse_arguments():
     """
     Handle user-supplied arguments
     """
-    parser = argparse.ArgumentParser()
+    desc = ('OSINT tool to generate lists of probable usernames from a'
+            ' given company\'s LinkedIn page. This tool may break when'
+            ' LinkedIn changes their site. Please open issues on GitHub'
+            ' to report any inconsistencies, and they will be quickly fixed.')
+    parser = argparse.ArgumentParser(description=desc)
 
-    parser.add_argument('username', type=str, action='store',
+    parser.add_argument('-u', '--username', type=str, action='store',
+                        required=True,
                         help='A valid LinkedIn username.')
-    parser.add_argument('company', type=str, action='store',
+    parser.add_argument('-c', '--company', type=str, action='store',
+                        required=True,
                         help='Company name exactly as typed in the company '
                         'linkedin profile page URL.')
     parser.add_argument('-p', '--password', type=str, action='store',
@@ -144,47 +150,47 @@ def parse_arguments():
 
 
 def check_li2u_version():
-    """Checks Gitlab for a new version
+    """Checks GitHub for a new version
 
-    Uses a simple regex to look at the 'tags' page on Gitlab. Extracts the
+    Uses a simple regex to look at the 'releases' page on GitHub. Extracts the
     First tag found and assumes it is the latest. Compares with the global
     variable CURRENT_TAG and informs if a new version is available.
     """
-    latest_tags_regex = r'href="/initstring/linkedin2username/tags/(.*?)"'
+    latest_rel_regex = r'/initstring/linkedin2username/tree/(.*?)"'
     session = requests.session()
-    tags_url = 'https://gitlab.com/initstring/linkedin2username/tags'
-    tags_chars = re.compile(r'[^0-9\.]')
+    rel_url = 'https://github.com/initstring/linkedin2username/releases'
+    rel_chars = re.compile(r'[^0-9\.]')
 
     # Scrape the page and grab the regex.
-    response = session.get(tags_url)
-    latest_tag = re.findall(latest_tags_regex, response.text)
+    response = session.get(rel_url)
+    latest_rel = re.findall(latest_rel_regex, response.text)
 
     # Remove characters from tag name that will mess up version comparison.
     # Also just continue if we can't find the tags - we don't want that small
     # function to break the entire app.
-    if latest_tag[0]:
-        latest_tag = tags_chars.sub('', latest_tag[0])
+    if latest_rel[0]:
+        latest_rel = rel_chars.sub('', latest_rel[0])
     else:
         return
 
     # Check the tag found with the one defined in this script.
-    if CURRENT_TAG == latest_tag:
+    if CURRENT_REL == latest_rel:
         print("")
         print(PC.ok_box + "Using version {}, which is the latest on"
-              " Gitlab.\n".format(CURRENT_TAG))
+              " GitHub.\n".format(CURRENT_REL))
         return
-    if StrictVersion(CURRENT_TAG) > StrictVersion(latest_tag):
+    if StrictVersion(CURRENT_REL) > StrictVersion(latest_rel):
         print("")
         print(PC.warn_box + "Using version {}, which is NEWER than {}, the"
               " latest official release. Good luck!\n"
-              .format(CURRENT_TAG, latest_tag))
+              .format(CURRENT_REL, latest_rel))
         return
-    if StrictVersion(CURRENT_TAG) < StrictVersion(latest_tag):
+    if StrictVersion(CURRENT_REL) < StrictVersion(latest_rel):
         print("")
         print(PC.warn_box + "You are using {}, but {} is available.\n"
               "    LinkedIn changes often - this version may not work.\n"
-              "    https://gitlab.com/initstring/linkedin2username.\n"
-              .format(CURRENT_TAG, latest_tag))
+              "    https://github.com/initstring/linkedin2username.\n"
+              .format(CURRENT_REL, latest_rel))
         return
 
 
@@ -224,7 +230,7 @@ def login(args):
 
     # We wll grab an anonymous response to look for the CSRF token, which
     # is required for our logon attempt.
-    anon_response = session.get('https://www.linkedin.com/')
+    anon_response = session.get('https://www.linkedin.com/uas/login')
     login_csrf = re.findall(r'name="loginCsrfParam".*?value="(.*?)"',
                             anon_response.text)
     if login_csrf:
@@ -243,12 +249,13 @@ def login(args):
 
     # Perform the actual login. We disable redirects as we will use that 302
     # as an indicator of a successful logon.
-    response = session.post('https://www.linkedin.com/uas/login-submit',
+    response = session.post('https://www.linkedin.com/uas/login-submit'
+                            '?loginSubmitSource=GUEST_HOME',
                             data=auth_payload, allow_redirects=False)
 
     # Define a successful login by the 302 redirect to the 'feed' page. Try
     # to detect some other common logon failures and alert the user.
-    if response.status_code == 302:
+    if response.status_code == 302 or response.status_code == 303:
         redirect = response.headers['Location']
         if 'feed' in redirect:
             print(PC.ok_box + "Successfully logged in.\n")
@@ -264,11 +271,11 @@ def login(args):
             print(PC.warn_box + "You've triggered a CAPTCHA. Oops. Try logging"
                   " in with your web browser first and come back later.")
             return False
-        else:
-            # The below will detect some 302 that I don't yet know about.
-            print(PC.warn_box + "Some unknown error logging in. If this"
-                  " persists, please open an issue on gitlab.\n")
-            return False
+
+        # The below will detect some 302 that I don't yet know about.
+        print(PC.warn_box + "Some unknown error logging in. If this"
+              " persists, please open an issue on github.\n")
+        return False
 
     # A failed logon doesn't generate a 302 at all, but simply reponds with
     # the logon page. We detect this here.
@@ -280,7 +287,7 @@ def login(args):
     # If we make it past everything above, we have no idea what happened.
     # Oh well, we fail.
     print(PC.warn_box + "Some unknown error logging in. If this persists,"
-          "please open an issue on gitlab.\n")
+          "please open an issue on github.\n")
     return False
 
 
@@ -302,16 +309,17 @@ def get_company_info(name, session):
     searching for the company, and looking at the name in the address bar.
     """
     # The following regexes may be moving targets, I will try to keep them up
-    # to date. If you have issues with these, please open a ticket on GitLab.
+    # to date. If you have issues with these, please open a ticket on GitHub.
     # Thanks!
     website_regex = r'companyPageUrl":"(http.*?)"'
     staff_regex = r'staffCount":([0-9]+),'
-    id_regex = r'normalized_company:([0-9]+)[&,"]'
+    id_regex = r'"objectUrn":"urn:li:company:([0-9]+)"'
     desc_regex = r'localizedName":"(.*?)"'
+    escaped_name = urllib.parse.quote_plus(name)
 
     response = session.get(('https://www.linkedin.com'
                             '/voyager/api/organization/companies?'
-                            'q=universalName&universalName=' + name))
+                            'q=universalName&universalName=' + escaped_name))
 
     # Some geo regions are being fed a 'lite' version of LinkedIn mobile:
     # https://bit.ly/2vGcft0
@@ -337,13 +345,13 @@ def get_company_info(name, session):
     # set generic strings as warnings.
     found_desc = re.findall(desc_regex, response.text)
     if not found_desc:
-        found_desc = ["RegEx issues, please open a ticket on GitLab!"]
+        found_desc = ["RegEx issues, please open a ticket on GitHub!"]
     found_staff = re.findall(staff_regex, response.text)
     if not found_staff:
-        found_staff = ["RegEx issues, please open a ticket on GitLab!"]
+        found_staff = ["RegEx issues, please open a ticket on GitHub!"]
     found_website = re.findall(website_regex, response.text)
     if not found_website:
-        found_website = ["RegEx issues, please open a ticket on GitLab!"]
+        found_website = ["RegEx issues, please open a ticket on GitHub!"]
 
     print("          ID:    " + found_id[0])
     print("          Alias: " + name)
@@ -604,6 +612,7 @@ def write_files(company, domain, name_list):
     files['firstl'] = open(out_dir + '/' + company + '-firstl.txt', 'w')
     files['firstlast'] = open(out_dir + '/' + company + '-first.last.txt', 'w')
     files['fonly'] = open(out_dir + '/' + company + '-first.txt', 'w')
+    files['lastf'] = open(out_dir + '/' + company + '-lastf.txt', 'w')
 
     # First, write all the raw names to a file.
     for name in name_list:
@@ -622,6 +631,8 @@ def write_files(company, domain, name_list):
                 first, second, third = parse[0], parse[-2], parse[-1]
                 files['flast'].write(first[0] + second + domain + '\n')
                 files['flast'].write(first[0] + third + domain + '\n')
+                files['lastf'].write(second + first[0] + domain + '\n')
+                files['lastf'].write(third + first[0] + domain + '\n')
                 files['firstlast'].write(first + '.' + second + domain + '\n')
                 files['firstlast'].write(first + '.' + third + domain + '\n')
                 files['firstl'].write(first + second[0] + domain + '\n')
@@ -630,6 +641,7 @@ def write_files(company, domain, name_list):
             else:               # for users with only one last name
                 first, last = parse[0], parse[-1]
                 files['flast'].write(first[0] + last + domain + '\n')
+                files['lastf'].write(last + first[0] + domain + '\n')
                 files['firstlast'].write(first + '.' + last + domain + '\n')
                 files['firstl'].write(first + last[0] + domain + '\n')
                 files['fonly'].write(first + domain + '\n')
